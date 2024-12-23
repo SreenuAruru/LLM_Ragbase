@@ -4,6 +4,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
 from dotenv import load_dotenv
+import os
+import logging
 import asyncio
 import random
 
@@ -14,9 +16,13 @@ from ragbase.model import create_llm
 from ragbase.retriever import create_retriever
 from ragbase.uploader import upload_files
 
+from opcua_client import connect_to_opcua_server, update_single_node_value
+
 load_dotenv()
 
 app = FastAPI()
+
+OPC_UA_SERVER_ENDPOINT = os.getenv("OPC_UA_SERVER_ENDPOINT")
 
 # CORS middleware for API access
 app.add_middleware(
@@ -46,6 +52,32 @@ session_messages = [
     {"role": "assistant", "content": "Hi! What do you want to know about your documents?"}
 ]
 
+async def update_opcua_node(user_question, answer):
+    """API endpoint to update the OPC UA node based on the question and its answer."""
+    try:
+        # Step 1: Fetch answer by invoking ask_question function
+        if not answer:
+            return {"message": "Failed to retrieve answer for the provided question."}
+
+        # Step 2: Connect to the OPC UA server
+        client = connect_to_opcua_server(OPC_UA_SERVER_ENDPOINT)
+        print("_______________________________--------------->")
+        if client is None:
+            raise HTTPException(status_code=500, detail="Failed to connect to OPC UA Server")
+
+        # Step 3: Find node by display name (or other identifier) and update based on the answer
+        update_success = update_single_node_value(client, answer, user_question)
+        client.disconnect()
+        
+        if update_success:
+            logging.info("Disconnected from OPC UA Server.")
+            return {"message": "Node updated successfully based on the question and answer."}
+        else:
+            return {"message": "No matching node found for the provided question."}
+
+    except Exception as e:
+        logging.error(f"Error during OPC UA node update: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating OPC UA node: {str(e)}")
 
 # Function to build the QA chain
 def build_qa_chain(files):
@@ -95,6 +127,8 @@ async def ask_question_api(request: QuestionRequest):
                 full_response += event
             elif isinstance(event, list):
                 documents.extend(event)
+        
+        await update_opcua_node(question, full_response)
 
         # Add the assistant's response to session messages
         session_messages.append({"role": "assistant", "content": full_response})
